@@ -1,0 +1,744 @@
+---
+title: "2022 Spring Project"
+author: "Justin Ehly"
+date: "3/31/2022"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Project Scope:
+* Use the train climate series data from New Delhi 2013 - 2017 to predict the temperature
+* Data is pre-separated into Train and Test
+* Source: https://www.kaggle.com/datasets/sumanthvrao/train-climate-Days-series-data?select=trainDelhiClimateTrain.csv
+
+#######
+
+import training/ testing data
+
+```{r}
+#setwd('C:/Users/justi/Google Drive/_SMU/6373 Days Series/2022 Project')
+
+train = read.csv('DailyDelhiClimateTrain.csv') # training data
+test = read.csv(('DailyDelhiClimateTest.csv')) # testing data
+head(train[-1])
+tail(train)
+train = head(train,-1)  # last row seems to be mistake
+tail(train)
+head(test)
+
+
+train = rbind(train, test) # merge dataframes and re-split them
+
+# note, this didn't end up getting used, but it was going to be too much work to go back and fix it
+test = tail(train, 21)  
+train = head(train, - 21) # remove test data
+
+
+summary(train)
+
+library(naniar)
+library(tswge)
+
+##### Look for any missing values including NA, variants of NA and 'UNKNOWN's in the data set ####
+missing <- sapply(train, function(x) sum(sum(x %in% common_na_strings), 
+                                        sum(x %in% common_na_numbers),
+                                        sum(is.na(x)), 
+                                        sum(x %in% 'UNKNOWN')))
+missing # shows 13 missing from humidity
+#common_na_numbers # -9   -99  -999 -9999  9999    66    77    88
+#train$humidity
+# very possible the common_na_numbers are picking up humidity readings that are actual and not missing
+```
+
+plot data
+```{r plot the data}
+par(mar=c(1,1,1,1))
+par(mfrow = c(4,1))
+plot(train$meantemp, type='l', main = 'Mean Temp', col = 'black')
+plot(train$humidity, type='l', main = 'Humidity', col = 'blue')
+plot(train$wind_speed, type = 'l', main = 'Wind Speed', col = 'green')
+plot(train$meanpressure, type = 'l', main = 'Mean Pressure', col = 'red')
+
+library(GGally)
+ggpairs(train[,2:5]) + theme_bw()
+
+```
+
+visually inspect for stationarity for each element
+
+```{r plot mean temp}
+# temp
+dev.off()
+Days = seq(1,1554)
+plot(Days, train$meantemp, type='l', lwd=1, col='darkorange3', pch=20, ylab='Temperature')
+title(main='2013-2017 Daily Temperature in New Delhi', col.main = 'darkorange3')
+
+acf(train$meantemp, col='darkorange3', lwd = 3, main='')
+title(main='ACF 2013-2017 Daily Temperature in New Delhi', col.main = 'darkorange3')
+
+pt = plotts.sample.wge(train$meantemp)
+dev.off()
+parz = parzen.wge(train$meantemp, trunc=365, plot=F)
+plot(parz$freq, parz$pzgram, xlab='Frequency', ylab='dB', col = 'darkorange3', type='l')
+title(main='Parzen Window Tuncation Point: M = 365', col.main = 'darkorange3')
+
+per = period.wge(train$meantemp)
+per$pgram[1:10]  # strongest  = 27.xxx in index 4
+per$freq[4] # 0.002574003
+
+```
+
+Mean Temperature does not appear to be stationary due to it’s slowly damping ACF…it is temperature data and from experience we know it is seasonal. We also see a peak at about 0.83 (12 months) and then additional peaks.
+We also see sinusoidal pattern in the realization
+
+```{r plot humidity}
+# humidity
+ph = plotts.sample.wge(train$humidity)
+
+```
+
+Humidity similarly does not appear to be stationary due to it’s sinusoidal pattern in the realization and slowly damping ACF…it is temperature data and from experience we know it is seasonal. We also see a peak at about 0.83 (12 months) and then additional peaks
+
+
+```{r plot wind speed}
+# wind speed
+pws = plotts.sample.wge(train$wind_speed)
+
+```
+
+train Wind Speed also does not appear to be stationary due to the cyclical pattern in the realization, the slowly damping, but almost sinusoidal pattern in the acf and the peaks at 0, 0.83 and etc in the spectral density
+
+```{r plot mean pressure}
+# mean pressure
+pmp = plotts.sample.wge(train$meanpressure, arlimits = T)
+
+
+```
+Mean train pressure does appear to be stationary with the randomness in the realization, the quickly damping to near zero in the afc.
+
+
+
+```{r Differencing Data}
+# temp
+# differces of 1, 12
+temp_diff1 = artrans.wge(train$meantemp, phi.tr = c(1), plottr = F)
+dev.off()
+Time = seq(1,1553)
+par(mfrow = c(1,2))
+plot(Time,temp_diff1, col = 'darkorange3', type='l', ylab='Temperature')
+title(main='Realization 1st Difference', col.main = 'darkorange3')
+acf(temp_diff1, col='darkorange3', lwd = 3, main='')
+title(main='ACF 1st Difference', col.main = 'darkorange3')
+
+dev.off()
+temp_365 = artrans.wge(train$meantemp, phi.tr = 365, plottr = F)
+acf(temp_365, col='darkorange3', lwd = 3, main='')
+title(main='ACF 365th Difference', col.main = 'darkorange3')
+
+
+temp_1_365 = artrans.wge(temp_diff1, phi.tr = 365, plottr = F)
+acf(temp_1_365)
+
+temp_diff1_5 = artrans.wge(temp_diff1, phi.tr = c(rep(0,4),1))
+acf(temp_diff1_5)
+
+temp_388_5 = artrans.wge(train$meantemp, phi.tr = 388.5)
+
+```
+Looks like we potentially have a (1-B) in the model
+With additional tests, we can confirm using the ACFs that there is no differencing at 3,4,6, 12, 30 or 90
+```{r}
+
+plotts.sample.wge(temp_diff1)
+
+```
+Interesting, with a single difference, we see a big dip at about .012, suggesting there is an MA component in this data after a difference.
+
+
+
+
+
+### ARMA Model ###
+
+```{r ARMA}
+aic5.wge(train$meantemp, p=0:8, q=0:3) #picks 6,2
+fit_arma = est.arma.wge(train$meantemp, p = 6, q = 2)
+mean(train$meantemp)
+fit_arma$avar
+```
+Notice the first factor is nearly on the unit circle, again I think this should be differenced at least once for any sort of good forecast.
+
+```{r}
+# generate and plot 3 sets of data using the nonstationary model
+
+
+g = list()
+for (i in 1:3){
+  g[[i]] = gen.arima.wge(200, phi = fit_arma$phi, theta = fit_arma$theta, vara = fit_arma$avar)
+  g[[i]] = g[[i]] + mean(train$meantemp)
+}
+dev.off()
+par(mfrow = c(4,1))
+plot(train$meantemp[1:200], type = 'l', main = 'Original Temp Data')
+plot(g[[1]], type = 'l', main = 'Generated Data')
+plot(g[[2]], type = 'l', main = 'Generated Data')
+plot(g[[3]], type = 'l', main = 'Generated Data')
+
+```
+
+```{r train test split}
+
+# hold back 200 days for cross validation
+x_test = tail(train[-1],200)
+
+X = cbind(head(train[-1],-200))
+```
+
+
+```{r 21-day forecast ARMA62}
+# 7 - day forecast
+fore_arma = fore.arma.wge(X$meantemp, phi = fit_arma$phi, theta =  fit_arma$theta, 
+                          n.ahead = 21, lastn = FALSE, plot=FALSE)
+```
+
+```{r plot 21day ARMA(6,2)}
+Days = seq(1255,1375)
+dev.off()
+plot(Days, train$meantemp[1255:1375], type = 'b', ylim = c(20,37), col='darkgrey', main = 'ARMA(6,2) 21-Day Temp Forecast', ylab = 'Temperature')
+lines(Days[101:121], fore_arma$f, type = 'l',  lwd = 5, col = 'red', pch=16 )
+lines(Days[101:121], fore_arma$ll, type = 'l',  lwd = 3,  col = 'blue', pch=16 )
+lines(Days[101:121], fore_arma$ul, type = 'l',  lwd = 2,  col = 'blue', pch=16 )
+```
+```{r ARMA(6,2) performance}
+arma_ase = mean((x_test$meantemp[1:21] - fore_arma$f)^2)
+arma_ase
+arma_rmse = sqrt(arma_ase)
+arma_rmse
+```
+Not a bad 7-day, but definitely lower than the actual data with the upper limit suggesting that we are within range of the original data.
+ASE: 9.123
+RMSE: 3.02
+
+
+```{r resids white noise}
+# check residuals for white noise
+parma = plotts.sample.wge(fore_arma$resid, arlimits = T)
+ljung.wge(fore_arma$resid, p = 7, q = 2, K = 24)
+ljung.wge(fore_arma$resid, p = 7, q = 2, K = 48)
+```
+Test for white noise from residuals: 
+Visually looks like white noise
+Ljung test suggest this is white noise with pvalues at .25 and .28 for k=24 and 48 respectively.
+
+```{r 200-day foreast ARMA62}
+# 21 - day forecast
+fore_arma_200 = fore.arma.wge(X$meantemp, phi = fit_arma$phi, theta =  fit_arma$theta, n.ahead = 200, lastn =FALSE, plot=FALSE)
+```
+
+```{r plot 200}
+Days = seq(1:1554)
+# plot the forecast 
+dev.off()
+plot(Days, train$meantemp[1:1554], type = 'l', main = 'ARMA(6,2) 200-Day Temp Forecast', ylab = 'Temperture', ylim = c(0,40), col = 'darkgrey')
+lines(Days[1355:1554], fore_arma_200$f, col = 'red', type='l', lwd = 5)
+lines(Days[1355:1554], fore_arma_200$ll, col = 'blue', type = 'l', lwd = 5)
+lines(Days[1355:1554], fore_arma_200$ul, col = 'blue', type = 'l', lwd = 5)
+
+```
+
+
+```{r stats}
+arma_200_ase = mean((x_test$meantemp - fore_arma_200$f)^2)
+arma_200_rmse = sqrt(arma_200_ase)
+arma_200_ase
+arma_200_rmse
+
+```
+Forecast actually doesn't look too bad for a 200-day forecast! It follows the curvature of the data, but doesn't necessarily pick up on the smaller variance.
+ASE: 9.882!, RMSE: 3.143
+actually might be a really good model!
+
+
+
+```{r rolling window RMSE}
+# rolling window forecasts
+
+roll_arma_21_rmse = roll.win.rmse.wge(train$meantemp, horizon = 21, phi = fit_arma$phi, theta = fit_arma$theta)
+roll_arma_200_rmse = roll.win.rmse.wge(train$meantemp, horizon = 200, phi = fit_arma$phi, theta = fit_arma$theta)
+
+
+
+```
+21-day Rolling RMSE: 137.765
+200-day Rolling RMSE: 298.491
+
+
+
+
+
+
+
+### VAR Method ###
+
+VAR Method
+cross correlation function
+```{r}
+dev.off()
+ccf(train$meanpressure, train$meantemp) # because i suspect there is a lagged relationship b/w pressure and temp
+```
+No significant lags here between pressure and temperature, although I thought there might be
+
+```{r}
+dev.off()
+ccf(train$humidity, train$meantemp)
+```
+Main spike is at 0, suggesting that humidity and temp coexist
+
+```{r}
+dev.off()
+ccf(train$wind_speed, train$meantemp)
+ccf(train$wind_speed, train$meantemp, lag.max = 100)
+```
+This sounds crazy, but after a little reading on google about wind, pressure and temperatue it is possible there should be a lag on wind at -28. But a little curiousity and we set the lag.max to 100 and we see this might not be useful information.
+
+
+```{r}
+library(vars)
+# hold back 200 days for cross validation
+x_test = tail(train[-1],200)
+
+X = cbind(head(train[-1],-200))
+vs = VARselect(X, lag.max = 15, type = 'const', season=NULL, exogen = NULL) # AIC 6, HQ(n) 4, BIC 1, FEP(n) 6
+vs$selection  # selection
+vs$criteria
+
+vs_sea = VARselect(X, lag.max = 15, type = 'const', season = 365) # AIC 5, BIC 1
+vs_sea$criteria
+vs_sea$selection
+
+min(vs$criteria[1,])  #mean AIC
+# VARsselect picks p=6 mean AIC 17.543
+lsfit6 = VAR(X, p=6, type = 'const')
+lsfit4 = VAR(X, p=4, type = 'const')
+lsfit1 = VAR(X, p=1, type = 'const')
+lsfit_sea =  VAR(X, p=5, type = 'const', season = 365)
+
+```
+
+From the equation representation we can see that 
+meantemp.l2, meantemp.l3 and  wind_speed.l6  are the only significant relationships to temp at X_t1
+
+```{r forecast 21-day}
+preds6 = predict(lsfit6, n.ahead = 21)
+preds4 = predict(lsfit4, n.ahead = 21)
+preds1 = predict(lsfit1, n.ahead = 21)
+preds_sea = predict(lsfit_sea, n.ahead = 21)
+mean(X$meantemp)
+```
+
+```{r 21-day permformance}
+
+var6_21_ase = mean((x_test$meantemp[1:21] - preds6$fcst$meantemp[,1])^2)
+var4_21_ase = mean((x_test$meantemp[1:21] - preds4$fcst$meantemp[,1])^2)
+var1_21_ase = mean((x_test$meantemp[1:21] - preds1$fcst$meantemp[,1])^2)
+var_sea_21_ase = mean((x_test$meantemp[1:21] - preds_sea$fcst$meantemp[,1])^2)
+
+var6_21_rmse = sqrt(var6_21_ase)
+var4_21_rmse = sqrt(var4_21_ase)
+var1_21_rmse = sqrt(var1_21_ase)
+var_sea_21_rmse = sqrt(var_sea_21_ase)
+
+var6_21_ase
+var4_21_ase
+var1_21_ase
+var_sea_21_ase
+
+var6_21_rmse
+var4_21_rmse
+var1_21_rmse
+var_sea_21_rmse
+```
+VAR6/ ASE:1.46 RMSE: 1.208
+VAR4/ ASE:1.724 RMSE: 1.313
+VAR1/ ASE:1.46 RMSE: 1.208
+VAR Seasonal/ ASE:7.24 RMSE: 2.692
+
+
+```{r plot}
+dev.off()
+Days = seq(1255,1375)
+plot(Days, train$meantemp[1255:1375], type = 'b', ylim = c(27,37), col='darkgrey',
+     main = 'VAR 21-Day Temp Forecast', ylab = 'Temperature')
+lines(Days[101:121], preds6$fcst$meantemp[,1], type = 'l',  lwd = 5, col = 'red', pch=16 )
+lines(Days[101:121], preds4$fcst$meantemp[,1], type = 'l',  lwd = 3,  col = 'green', pch=16 )
+lines(Days[101:121], preds1$fcst$meantemp[,1], type = 'l',  lwd = 2,  col = 'blue', pch=16 )
+lines(Days[101:121], preds_sea$fcst$meantemp[,1], type = 'l',  lwd = 2,  col = 'purple', pch=16 )
+legend(x = 1349, y = 37, legend = c('VAR P=6','VAR P=4', 'VAR P=1', 'VAR S=365 P=5'),
+       col = c('red', 'green', 'blue', 'purple'), lty = 1, lwd = 3,cex = 0.8)
+```
+VAR without seasonality doesn't do much to reflect the variability in the data. With the seasonality at 365, we see the variability accounted for, but the forecasts seem to be closer to mu = 25.59. The non seasonal forecasts appear to be damping towards the mean.
+
+```{r plot VAR1 alone}
+Days = seq(1255,1375)
+dev.off()
+
+plot(Days, train$meantemp[1255:1375], type = 'b', ylim = c(21,40), col='darkgrey', main = 'VAR1 21-Day Temp Forecast', ylab = 'Temperature')
+lines(Days[101:121], preds1$fcst$meantemp[,1], type = 'l',  lwd = 2,  col = 'red', pch=16 )
+lines(Days[101:121], preds1$fcst$meantemp[,2], type = 'l',  lwd = 2,  col = 'blue', pch=16 )
+lines(Days[101:121], preds1$fcst$meantemp[,3], type = 'l',  lwd = 2,  col = 'blue', pch=16 )
+```
+
+```{r 200-day forecast}
+
+preds2006 = predict(lsfit6, n.ahead = 200)
+preds2004 = predict(lsfit4, n.ahead = 200)
+preds2001 = predict(lsfit1, n.ahead = 200)
+preds200_sea = predict(lsfit_sea, n.ahead = 200)
+```
+
+```{r plot 200 fir var}
+Days = seq(1,1554)
+dev.off()
+plot(Days, train$meantemp, type = 'l', ylim = c(7,40), col='darkgrey', main = 'VAR 200-Day Temp Forecast', ylab = 'Temperature')
+lines(Days[1355:1554], preds2006$fcst$meantemp[,1], type = 'l', lwd = 7, col = 'red', pch=16 )
+lines(Days[1355:1554], preds2004$fcst$meantemp[,1], type = 'l', lwd = 5,  col = 'green', pch=16 )
+lines(Days[1355:1554], preds2001$fcst$meantemp[,1], type = 'l', lwd = 2,  col = 'blue', pch=16 )
+lines(Days[1355:1554], preds200_sea$fcst$meantemp[,1], type = 'l', lwd = 2,  col = 'purple', pch=16 )
+legend(x = 1210, y = 40, legend = c('VAR P=6','VAR P=4', 'VAR P=1', 'VAR S = 365 P = 5'),
+       col = c('red', 'green', 'blue', 'purple'), lty = 1, lwd = 3,cex = 0.8)
+```
+Seasonal VAR seems to have NAILED it!
+
+```{r plot seasonal model alone}
+Days = seq(1,1554)
+dev.off()
+plot(Days, train$meantemp, type = 'l', ylim = c(7,40), col='darkgrey', main = 'VAR P=5, S=365 200-Day Temp Forecast', ylab = 'Temperature')
+lines(Days[1355:1554], preds200_sea$fcst$meantemp[,1], type = 'l', lwd = 2, col = 'red', pch=16 )
+lines(Days[1355:1554], preds200_sea$fcst$meantemp[,2], type = 'l', lwd = 2,  col = 'blue', pch=16 )
+lines(Days[1355:1554], preds200_sea$fcst$meantemp[,3], type = 'l', lwd = 2,  col = 'blue', pch=16 )
+
+
+```
+
+
+```{r}
+fanchart(preds2001, colors =c('darkorange3'), col.y = 'darkgrey')
+
+```
+
+```{r}
+var2006_ase = mean((x_test$meantemp - preds2006$fcst$meantemp[,1])^2)
+var2004_ase = mean((x_test$meantemp - preds2004$fcst$meantemp[,1])^2)
+var2001_ase = mean((x_test$meantemp - preds2001$fcst$meantemp[,1])^2)
+var200_sea_ase = mean((x_test$meantemp - preds200_sea$fcst$meantemp[,1])^2)
+var2006_ase
+var2004_ase
+var2001_ase
+var200_sea_ase
+var2006_rmse = sqrt(mean((x_test$meantemp - preds2006$fcst$meantemp[,1])^2))
+var2004_rmse = sqrt(mean((x_test$meantemp - preds2004$fcst$meantemp[,1])^2))
+var2001_rmse = sqrt(mean((x_test$meantemp - preds2001$fcst$meantemp[,1])^2))
+var200_sea_RMSE = sqrt(var200_sea_ase)
+var2006_rmse
+var2004_rmse
+var2001_rmse
+var200_sea_RMSE
+
+```
+p=6/ ASE: 73.06, RMSE: 8.55 (AIC)
+p=4/ ASE: 68.77, RMSE: 8.29 (HQ(n))
+p=1/ ASE: 52.12, RMSE: 7.22 (BIC)
+S=365, p=5/ ASE: 9.39, RMSE: 3.06
+
+
+
+```{r}
+# white noise test 21-day VAR(p=1)
+pvar = plotts.sample.wge(lsfit1$varresult$meantemp$residuals, arlimits = T)
+ljung.wge(lsfit1$varresult$meantemp$residuals, p=1, K=24)
+ljung.wge(lsfit1$varresult$meantemp$residuals, p=1, K=48)
+```
+VAR with p=6
+The residuals do not appear to be white noise and the pvalues of the ljung test confirm they are not with pvalues = 0.032 and 0.044 at K=24 and 48
+
+```{r}
+# white noise test for the best performing VAR model
+pvar = plotts.sample.wge(lsfit_sea$varresult$meantemp$residuals, arlimits = T)
+ljung.wge(lsfit_sea$varresult$meantemp$residuals, p=5, K=24)
+ljung.wge(lsfit_sea$varresult$meantemp$residuals, p=5, K=48)
+```
+VAR with S=365 and p=5
+Visually the residuals appear to be white noise.
+Using the Ljung Box test, we confirm that residuals are white noise with pvalues of 0.395 and 0.066 with K = 24 and 48 respectively.
+This model is USEFUL!
+
+###########
+
+### MLP ###
+
+
+```{r base fit}
+
+library(nnfor)
+# train/ test split
+x_test = tail(train[-1],200)
+X = cbind(head(train[-1],-200))
+
+xrg = data.frame(humity = ts(X$humidity), wind_speed = ts(X$wind_speed), meanpressure =  ts(X$meanpressure))
+
+basefit = mlp(ts(X$meantemp), xreg = xrg, comb = 'median')
+plot(basefit)
+basefit
+```
+
+```{r custom fit}
+mfit = mlp(ts(X$meantemp), lags = c(1,2,3,4,5,6,7), xreg = xrg, comb='median')
+plot(mfit)
+mfit
+```
+
+
+```{r seasonal fit}
+seasonalfit = mlp(ts(X$meantemp), lags = c(1,2,3,4,5,6,7), xreg = xrg, comb='median', 
+                  allow.det.season = TRUE)
+plot(seasonalfit)
+seasonalfit
+```
+
+
+```{r}
+# forecast each model 21-days
+# create xreg data frame by adding 21 values from the beginning of the test set of data to the training set
+xrg_fore =  data.frame(humity = ts(c(X$humidity, head(x_test$humidity,21))), 
+                       wind_speed = ts(c(X$wind_speed, head(x_test$wind_speed,21))), 
+                       meanpressure =  ts(c(X$meanpressure,head(x_test$meanpressure,21))))
+
+fore_basefit = forecast(basefit, h = 21, xreg = xrg_fore)
+plot(fore_basefit)
+```
+
+```{r}
+fore_mfit = forecast(mfit, h = 21, xreg = xrg_fore)
+plot(fore_mfit)
+
+```
+
+```{r}
+fore_seasonalfit = forecast(seasonalfit, h = 21, xreg = xrg_fore, level = 95)
+plot(fore_seasonalfit)
+```
+
+```{r 21-day mlp pfrm}
+mlpbase_21_ase = mean((x_test$meantemp[1:21] - fore_basefit$mean)^2)
+mlpmfit_21_ase = mean((x_test$meantemp[1:21] - fore_mfit$mean)^2)
+mlpseasonal_21_ase = mean((x_test$meantemp[1:21] - fore_seasonalfit$mean)^2)
+
+mlpbase_21_rmse = sqrt(mlpbase_21_ase)
+mlpmfit_21_rmse = sqrt(mlpmfit_21_ase)
+mlpseasonal_21_rmse = sqrt(mlpseasonal_21_ase)
+
+mlpbase_21_ase
+mlpmfit_21_ase
+mlpseasonal_21_ase
+mlpbase_21_rmse
+mlpmfit_21_rmse
+mlpseasonal_21_rmse
+
+```
+
+MLP BASE ASE: 2.017, RMSE: 1.42
+MLP FIT ASE: 2.741, RMSE: 1.656
+MLP Seasonal ASE: 1.957, RMSE: 1.399
+
+
+```{r mlp 21-day forecast plot}
+
+
+Days = seq(1255,1375)
+dev.off()
+plot(Days, train$meantemp[1255:1375], type = 'l', ylim = c(27,37), col='brown', 
+     main = 'MLP 21-Day Temp Forecast', ylab = 'Temperature')
+lines(Days[100:120], fore_basefit$mean, type = 'l', lwd = 3, col = 'red', pch=16 )
+lines(Days[100:120], fore_mfit$mean, type = 'l', lwd = 3,col = 'green', pch=16 )
+lines(Days[100:120], fore_seasonalfit$mean, type = 'l', lwd = 3, col = 'blue', pch=16 )
+legend(x = 1349, y = 37, legend = c('Base MLP','Custom Tuned MLP', 'Seasonal MLP'),
+       col = c('red', 'green', 'blue'), lty = 1, lwd = 3,cex = 0.8)
+```
+
+
+# forecast each model 200-days
+```{r}
+# create xreg data frame by adding 21 values from the beginning of the test set of data to the training set
+
+xrg_fore =  data.frame(humity = ts(train$humidity), 
+                       wind_speed = ts(train$wind_speed), 
+                       meanpressure =  ts(train$meanpressure))
+
+fore_basefit200 = forecast(basefit, h = 200, xreg = xrg_fore)
+plot(fore_basefit200)
+```
+
+```{r}
+fore_mfit200 = forecast(mfit, h = 200, xreg = xrg_fore)
+plot(fore_mfit200)
+
+```
+
+```{r}
+fore_seasonalfit200 = forecast(seasonalfit, h = 200, xreg = xrg_fore)
+plot(fore_seasonalfit200)
+
+```
+
+
+```{r}
+
+Days = seq(1000,1554)
+dev.off()
+plot(Days, train$meantemp[1000:1554], type = 'l', ylim = c(7,40), col='brown', main = 'MLP 200-Day Temp Forecast', ylab = 'Temperature')
+lines(Days[355:554], fore_basefit200$mean, type = 'l', lwd = 3, col = 'red', pch=16 )
+lines(Days[355:554], fore_mfit200$mean, type = 'l', lwd = 3,col = 'green', pch=16 )
+lines(Days[355:554], fore_seasonalfit200$mean, type = 'l', lwd = 3, col = 'blue', pch=16 )
+legend(x = 1430, y = 40, legend = c('Base MLP','Custom Tuned MLP', 'Seasonal MLP'),
+       col = c('red', 'green', 'blue'), lty = 1, lwd = 3,cex = 0.8)
+```
+
+
+```{r}
+
+mlpbase_200_ase = mean((x_test$meantemp - fore_basefit200$mean)^2)
+mlpmfit_200_ase = mean((x_test$meantemp - fore_mfit200$mean)^2)
+mlpseasonal_200_ase = mean((x_test$meantemp - fore_seasonalfit200$mean)^2)
+
+
+mlpbase_200_rmse = sqrt(mean((x_test$meantemp - fore_basefit200$mean)^2))
+mlpmfit_200_rmse = sqrt(mean((x_test$meantemp - fore_mfit200$mean)^2))
+mlpseasonal_200_rmse = sqrt(mean((x_test$meantemp - fore_seasonalfit200$mean)^2))
+
+mlpbase_200_ase
+mlpmfit_200_ase
+mlpseasonal_200_ase
+
+mlpbase_200_rmse
+mlpmfit_200_rmse
+mlpseasonal_200_rmse
+
+```
+base mlp/ ASE: 104.36, RMSE: 10.21
+mfit mlp/ 102.96, RMSE: 10.03
+seasonal mlp/ ASE: 102.48 RMSE: 10.15
+
+```{r ljung for nn}
+# Bivin I borrowed your code
+
+ljung.nn.wge=function (x, K=24, hd=0) 
+{
+    cor <- acf(x, lag.max = K, plot = FALSE, na.action = na.pass)
+    n <- length(x)
+    df=K-hd
+    obs <- cor$acf[2:(K + 1)]
+cat('Obs',obs,'\n')
+    test <- "Ljung-Box test"
+    chi.square <- n * (n + 2) * sum(1/seq.int(n - 1, n - K) * obs^2)
+    pval <- 1 - pchisq(chi.square, K - hd)
+out1=list(test=test,K=K, chi.square=chi.square,df=df,pval=pval)
+return(out1)   
+}
+```
+
+```{r}
+# check for white noise
+mlpp = plotts.sample.wge(fore_seasonalfit200$residuals, arlimits = T)
+ljung.nn.wge(fore_seasonalfit200$residuals, K = 24, hd = seasonalfit$hd)
+ljung.nn.wge(fore_seasonalfit200$residuals, K = 48, hd = seasonalfit$hd)
+
+```
+The seasonal fit residuals for the mlp visually appear to be white noise.
+If I correctly adapted the ljung function for the mlp, using the number of hidden nodes in place of the p and q from the ARMA models, then we can confirm the residuals are white noise with pvalues pf 0.0586 and 0.142 with K=24 and K=48 respectively.
+
+### Ensemble ###
+
+```{r ensemble}
+ensemble_21day = list()
+ensemble_200day = list()
+ensemble_21day$f = (fore_arma$f + preds_sea$fcst$meantemp[,1])/2
+ensemble_21day$ul = (fore_arma$ul + preds_sea$fcst$meantemp[,3])/2
+ensemble_21day$ll = (fore_arma$ll + preds_sea$fcst$meantemp[,2])/2
+
+ensemble_200day$f = (fore_arma_200$f +  preds200_sea$fcst$meantemp[,1]) /2
+ensemble_200day$ul = (fore_arma_200$ul +  preds200_sea$fcst$meantemp[,3]) /2
+ensemble_200day$ll = (fore_arma_200$ll +  preds200_sea$fcst$meantemp[,2]) /2
+```
+
+
+```{r mlp 21-day forecast plots}
+
+
+Days = seq(1255,1375)
+dev.off()
+plot(Days, train$meantemp[1255:1375], type = 'l', ylim = c(20,37), col='brown', 
+     main = 'Ensemble (ARMA(6,2) + VAR(S=365,p=5)) Model 21-Day Temp Forecast', ylab = 'Temperature')
+lines(Days[100:120], ensemble_21day$f, type = 'l', lwd = 3, col = 'red', pch=16 )
+lines(Days[100:120], ensemble_21day$ul, type = 'l', lwd = 3,col = 'blue', pch=16 )
+lines(Days[100:120], ensemble_21day$ll, type = 'l', lwd = 3, col = 'blue', pch=16 )
+
+```
+
+```{r ensemble permormance}
+
+ens_21_ase = mean((x_test$meantemp[1:21] - ensemble_21day$f)^2)
+ens_21_rmse = sqrt(ens_21_ase)
+ens_21_ase
+ens_21_rmse
+
+```
+Enemble 21-d ASE: 7.992
+Ensemble 200-d RMSE: 1.975
+
+```{r ensemble 200-day plot}
+
+Days = seq(1,1554)
+dev.off()
+plot(Days, train$meantemp, type = 'l', ylim = c(0,40), col='darkgrey', 
+     main = 'Ensemble (ARMA(6,2) + VAR(S=365, p=5) Model 200-Day Temp Forecast', ylab = 'Temperature')
+lines(Days[1355:1554], ensemble_200day$f, type = 'l', lwd = 3, col = 'red', pch=16 )
+lines(Days[1355:1554], ensemble_200day$ul, type = 'l', lwd = 3,col = 'blue', pch=16 )
+lines(Days[1355:1554], ensemble_200day$ll, type = 'l', lwd = 3, col = 'blue', pch=16 )
+```
+
+```{r 200day perfm}
+
+ens_200_ase = mean((x_test$meantemp - ensemble_200day$f)^2)
+ens_200_rmse = sqrt(ens_200_ase)
+ens_200_ase
+ens_200_rmse
+```
+Ensemble 200-d ASE: 6.448
+Ensemble 200-d RMSE: 1.975
+
+### Final Model Stats ###
+```{r final stats}
+model_performance = data.frame(Models = c('ARMA(6,2)','VAR(p=1)', 'VAR(S=365,p=5)', 'MLP-Seasonal', 'Ensemble'),
+                               'ASE 21-Day' = c(arma_ase, var1_21_ase, var_sea_21_ase, mlpseasonal_21_ase, ens_21_ase),
+                               'RMSE 21-Day' = c(arma_rmse, var1_21_rmse, var_sea_21_rmse, mlpseasonal_21_rmse, 
+                                                 ens_21_rmse),
+                               'ASE 200-Day' = c(arma_200_ase, var2001_ase, var200_sea_ase, mlpseasonal_200_ase,
+                                                 ens_200_ase),
+                               'RMSE 200-Day' = c(arma_200_rmse, var2001_rmse, var200_sea_RMSE, mlpseasonal_200_rmse,
+                                                  ens_200_rmse))
+
+```
+
+```{r}
+
+model_performance
+
+```
+
+
